@@ -31,6 +31,7 @@ import Control.Concurrent.STM
 import Control.Concurrent.STM.TVar
 import Control.Monad ((>=>))
 import Data.Char (isDigit)
+import Data.List.Split (splitOn)
 import Data.IntMap (IntMap)
 import Data.Proxy (Proxy(..))
 import Data.Tagged (Tagged(..))
