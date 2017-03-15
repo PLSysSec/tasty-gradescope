@@ -1,6 +1,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 -- | Scored tests and Gradescope JSON output for Tasty
 module Test.Tasty.GradeScope where
+
 import Test.Tasty
 import Test.Tasty.Providers
 import Test.Tasty.Options
@@ -28,18 +29,14 @@ import Text.JSON hiding (Result)
 
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TVar
-import Control.Monad
-import Data.Bifunctor (first)
-import Data.Char
+import Control.Monad ((>=>))
+import Data.Char (isDigit)
 import Data.IntMap (IntMap)
 import Data.Proxy (Proxy(..))
 import Data.Tagged (Tagged(..))
 import Data.Typeable (Typeable)
-import qualified Data.IntMap as IntMap
-
 import Text.ParserCombinators.ReadP
-
-import Debug.Trace
+import qualified Data.IntMap as IntMap
 
 -- | EXAMPLE OUTPUT
 --
@@ -135,7 +132,7 @@ scoreTests outfile testInfo testStatus = do
       let testResults = IntMap.foldrWithKey (\key entry rss -> entry key : rss) mempty
                       $ zipMapWith testResult testInfo rawResults
       writeFile outfile $ (encode (toJSObject [ ("execution_time", showJSON (ceiling time :: Int))
-                                                   , ("tests", showJSON testResults)]))
+                                              , ("tests", showJSON testResults)]))
       return . and $ resultSuccessful <$> rawResults
 
 zipMapWith :: (a -> b -> c) -> IntMap a -> IntMap b -> IntMap c
