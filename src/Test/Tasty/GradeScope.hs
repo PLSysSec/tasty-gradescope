@@ -60,6 +60,14 @@ import qualified Data.IntMap as IntMap
 --     ]
 -- }
 
+newtype Weight = Weight Int deriving Typeable
+
+instance IsOption Weight where
+  defaultValue = 1
+  parseValue   = read
+  optionName   = Tagged "Weight"
+  optionHelp   = Tagged "How many points a test is worth"
+
 newtype GSScoreFile = GSScoreFile FilePath deriving Typeable
 
 instance IsOption (Maybe GSScoreFile) where
@@ -68,20 +76,32 @@ instance IsOption (Maybe GSScoreFile) where
   optionName   = Tagged "scores"
   optionHelp   = Tagged "A file path to output scores, as a JSON file in GradeScope format"
 
+gradeOptions :: [OptionDescription]
+gradeOptions = [ Option (Proxy :: Proxy (Maybe GSScoreFile))
+               , Option (Proxy :: Proxy Weight)
+               ]
+
 gsConsoleReporter :: Ingredient
 gsConsoleReporter = consoleTestReporter `composeReporters` gradescopeReporter
 
 gradescopeReporter :: Ingredient
+gradescopeReporter = TestReporter gradeOptions runner
+  where
+    runner opts tests = do
+      GSScoreFile output <- lookupOption opts
+      return $ \statusMap -> do
+        Const summary <- flip evalStateT 0 $ getCompose $ getTraversal $
+          foldTestTree foldScores opts tests
+{-
+gradescopeReporter :: Ingredient
 gradescopeReporter = TestReporter optDesc runner
   where
-    optDesc :: [OptionDescription]
-    optDesc = [ Option (Proxy :: Proxy (Maybe GSScoreFile)) ]
 
     runner :: OptionSet -> TestTree -> Maybe (StatusMap -> IO (Time -> IO Bool))
     runner opts tree = do
       GSScoreFile output <- lookupOption opts
       pure $ scoreTests output (buildTestInfos opts tree)
-
+-}
 data TestInfo = TestInfo
   { testWorth :: Int
   , testName  :: TestName
@@ -139,6 +159,12 @@ scoreTests outfile testInfo testStatus = do
                                               , ("tests", showJSON testResults)]))
       return . and $ resultSuccessful <$> rawResults
 
+scoreTests1 :: FilePath -> OptionSet -> TestTree -> (StatusMap -> IO (Time -> IO Bool))
+scoreTests1 outfile tests testStatus = do
+  Const summary <- flip evalStateT 0 $ getCompose $ getTraversal $
+    foldTestTree foldScores opts tests
+
+
 zipMapWith :: (a -> b -> c) -> IntMap a -> IntMap b -> IntMap c
 zipMapWith f a b = IntMap.mapMaybeWithKey (\k v -> f v <$> IntMap.lookup k b) a
 
@@ -147,3 +173,34 @@ waitFinished = readTVar >=> \st ->
   case st of
     Done x -> pure x
     _      -> retry
+
+--------------------------------------------------------------------------------
+
+data ScoreSummary = ScoreSummary
+  { individualTests :: [TestResult]
+  } deriving Generic
+
+instance Monoid ScoreSummary where
+  mempty = ScoreSummary []
+  ss1 <> ss2 = ScoreSummary (individualTests ss1 <> individualTests ss2)
+
+
+type ScoreTraversal = Traversal (Compose (StateT Int IO) (Const ScoreSummary))
+
+scoreSingleTest :: IsTest t
+                => StatusMap -> OptionSet -> TestName -> t -> SummaryTraversal
+scoreSingleTest statusMap options name _ = Traversal $ Compose $ do
+  ix <- State.get
+  let Weight total = lookupOption options
+  summary <- lift $ do
+    result <- atomically $ waitFinished $ IntMap.lookup ix statusMap
+    return $ testResult (TestInfo weight name) result
+  Const summary <$ State.modify (+1)
+
+scoreGroup :: TestName -> SummaryTraversal -> SummaryTraversal
+scoreGroup group kids = kids
+
+foldScores :: TreeFold
+foldScores = trivialFold { foldSingle = scoreSingleTest statusMap
+                         , foldGroup = scoreGroup
+                         }
