@@ -31,7 +31,7 @@ import Text.JSON hiding (Result)
 
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TVar
-import Control.Monad ((>=>))
+import Control.Monad ((>=>), liftM)
 import qualified Control.Monad.State as State
 import Data.Char (isDigit)
 import Data.Functor.Const
@@ -148,10 +148,10 @@ instance JSON TestResult where
 
 instance JSON VisibilityOpts where
   readJSON = undefined
-  showJSON Hidden    = toJSString "hidden"
-  showJSON AfterDue  = toJSString "after_due_date"
-  showJSON AfterPub  = toJSString "after_published"
-  showJSON Visible   = toJSString "visible"
+  showJSON Hidden    = showJSON "hidden"
+  showJSON AfterDue  = showJSON "after_due_date"
+  showJSON AfterPub  = showJSON "after_published"
+  showJSON Visible   = showJSON "visible"
 
 data ScoreSummary = ScoreSummary
   { individualTests :: [TestResult]
@@ -177,8 +177,8 @@ scoreSingleTest statusMap options resultName _ = Traversal $ Compose $ do
   resultId <- State.get
   let Weight resultWeight = lookupOption options
       Visibility resultVisible = lookupOption options
-  summary <- lift $ do
-    resultMetadata <- atomically $ waitFinished $ IntMap.lookup resultId statusMap
+  summary <- liftM $ do
+    resultMetadata <- atomically . waitFinished $ resultId IntMap.! statusMap
     return TestResult{..}
   Const summary <$ State.modify (+1)
 
