@@ -106,8 +106,11 @@ testResult (TestInfo tot name) rs num = TestResult num name (Score got tot) rs
     got | resultSuccessful rs = tot
         | otherwise           = 0
 
+-- A test name is a full path group1/group2/.../groupN/test
+-- For now we focus only on the leaves.
+-- TODO: coarse grained scoring by TestGroup
 instance Read TestInfo where
-  readsPrec _ = readP_to_S parseTestInfo
+  readsPrec _ = readP_to_S parseTestInfo . last . splitOn "/"
 
 -- "[n] blah blah blah"
 parseTestInfo :: ReadP TestInfo

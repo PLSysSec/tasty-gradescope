@@ -28,6 +28,7 @@ library
                        process,
                        json,
                        tasty,
+                       split
   default-language:    Haskell2010
 
 test-suite tasty-gradescope-test
