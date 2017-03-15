@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 -- | Scored tests and Gradescope JSON output for Tasty
-module TastyGrades where
+module Test.Tasty.GradeScope where
 import Test.Tasty
 import Test.Tasty.Providers
 import Test.Tasty.Options
