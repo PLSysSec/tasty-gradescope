@@ -9,6 +9,7 @@ import Test.Tasty.Options
   , OptionSet(..)
   , OptionDescription(..)
   , lookupOption
+  , safeRead
   )
 import Test.Tasty.Ingredients
   ( Ingredient(..)
@@ -31,6 +32,7 @@ import Control.Monad ((>=>), liftM)
 import qualified Control.Monad.State as State
 import Data.Functor.Const
 import Data.Functor.Compose
+import Data.Maybe
 import Data.Monoid
 import Data.IntMap (IntMap)
 import Data.Proxy (Proxy(..))
@@ -71,38 +73,37 @@ gradeOptions =  [ Option (Proxy :: Proxy (Maybe GSScoreFile))
                 , Option (Proxy :: Proxy TotalPoints)
                 ]
 
-newtype TotalPoints = TotalPoints (Sum Int) deriving Typeable
+newtype TotalPoints = TotalPoints (Sum Int) deriving (Eq, Ord, Typeable)
 instance IsOption TotalPoints where
   defaultValue = TotalPoints mempty
   parseValue   = Just . TotalPoints . pure . read
   optionName   = Tagged "TotalPoints"
   optionHelp   = Tagged "Total Points: if neg scoring this is max possible for the suite; else running total"
 
-newtype NegScoring = NegScoring Bool deriving Typeable
+newtype NegScoring = NegScoring Bool deriving (Eq, Ord, Typeable)
 instance IsOption NegScoring where
   defaultValue = NegScoring False
   parseValue   = Just . NegScoring . read
   optionName   = Tagged "NegScoring"
   optionHelp   = Tagged "Negative Scoring (deduct points from max)"
 
-data VisibilityOpts = Hidden | AfterDue | AfterPub | Visible
-newtype Visibility  = Visibility VisibilityOpts deriving Typeable
+data Visibility = Hidden | AfterDue | AfterPub | Visible deriving (Eq, Ord, Typeable)
 instance IsOption Visibility where
-  defaultValue = Visibility Visible
+  defaultValue = Visible
   parseValue   = undefined
   optionName   = Tagged "Visibility"
   optionHelp   = Tagged "Is this test visible?"
 
-newtype Weight = Weight Int deriving Typeable
+newtype Weight = Weight Int deriving (Eq, Ord, Typeable)
 instance IsOption Weight where
   defaultValue = Weight 1
-  parseValue   = Just . Weight . read
+  parseValue   = fmap Weight . safeRead
   optionName   = Tagged "Weight"
   optionHelp   = Tagged "How many points a test is worth"
 
-newtype GSScoreFile = GSScoreFile FilePath deriving Typeable
+newtype GSScoreFile = GSScoreFile FilePath deriving (Eq, Ord, Typeable)
 instance IsOption (Maybe GSScoreFile) where
-  defaultValue = Just (GSScoreFile "results.json")
+  defaultValue = Just (GSScoreFile "result.json")
   parseValue   = Just . Just . GSScoreFile
   optionName   = Tagged "scores"
   optionHelp   = Tagged "A file path to output scores, as a JSON file in GradeScope format"
@@ -112,8 +113,8 @@ instance IsOption (Maybe GSScoreFile) where
 scored :: Int -> TestTree -> TestTree
 scored n = localOption (Weight n)
 
-visibility :: VisibilityOpts -> TestTree -> TestTree
-visibility v = localOption (Visibility v)
+visibility :: Visibility -> TestTree -> TestTree
+visibility v = localOption v
 
 -- * Reporter
 
@@ -129,7 +130,7 @@ gradescopeReporter = TestReporter gradeOptions runner
 
 scoreTests :: FilePath -> OptionSet -> TestTree -> (StatusMap -> IO (Time -> IO Bool))
 scoreTests outfile opts tests = \testStatus -> do
-  let TotalPoints totalPoints = lookupOption opts
+  TotalPoints totalPoints <- pure (lookupOption opts)
   Const summary <- flip State.evalStateT 0 $ getCompose $ getTraversal $
     Runners.foldTestTree (foldScores testStatus) opts tests
   return $ \time -> do
@@ -138,7 +139,7 @@ scoreTests outfile opts tests = \testStatus -> do
                           , ("score"          , showJSON (getSum (runningTotal summary <> totalPoints)))
                           , ("tests"          , showJSON summary)
                           ]))
-    return . (0 ==) . getSum . numFailures $ summary
+    return $ numFailures summary == mempty
 
 -- * Internals
 
@@ -147,7 +148,7 @@ data TestResult = TestResult
   , resultName     :: TestName
   , resultWeight   :: Int
   , resultMetadata :: Result
-  , resultVisible  :: VisibilityOpts
+  , resultVisible  :: Visibility
   }
 
 instance JSON TestResult where
@@ -168,7 +169,7 @@ instance JSON TestResult where
 resultSuccessful :: TestResult -> Bool
 resultSuccessful = Runners.resultSuccessful . resultMetadata
 
-instance JSON VisibilityOpts where
+instance JSON Visibility where
   readJSON = undefined
   showJSON Hidden    = showJSON "hidden"
   showJSON AfterDue  = showJSON "after_due_date"
@@ -184,7 +185,7 @@ data ScoreSummary = ScoreSummary
 instance JSON ScoreSummary where
   readJSON = undefined
   showJSON ss = JSObject . toJSObject $
-    [ ("tests", showJSON ss) ]
+    [ ("tests", showJSON (individualTests ss)) ]
 
 instance Monoid ScoreSummary where
   mempty = ScoreSummary mempty mempty mempty
@@ -204,13 +205,13 @@ scoreSingleTest :: IsTest t
 scoreSingleTest statusMap options resultName _ = Traversal $ Compose $ do
   resultId <- State.get
   let Weight resultWeight = lookupOption options
-      Visibility resultVisible = lookupOption options
+      resultVisible = lookupOption options :: Visibility
       NegScoring ns = lookupOption options
   testResult <- State.lift $ do
     resultMetadata <- atomically . waitFinished $ statusMap IntMap.! resultId
     return TestResult{..}
   let
-    failed = resultSuccessful testResult
+    failed = not (resultSuccessful testResult)
     summary = ScoreSummary [testResult] (scoreQ resultWeight failed ns) (countFail failed)
   Const summary <$ State.modify (+1)
   where
