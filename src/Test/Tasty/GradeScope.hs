@@ -214,12 +214,12 @@ scoreSingleTest statusMap options resultName _ = Traversal $ Compose $ do
     summary = ScoreSummary [testResult] (scoreQ resultWeight failed ns) (countFail failed)
   Const summary <$ State.modify (+1)
   where
-    scoreQ w f ns
       -- negative scoring, fail
-      | ns == True && f == True   = Sum (-w)
+    scoreQ w True True   = Sum (-w)
       -- positive scoring, pass
-      | ns == False && f == False = Sum w
-      | otherwise                 = Sum 0
+    scoreQ w False False = Sum w
+    scoreQ w _    _      = Sum 0
+
     countFail True = Sum 1
     countFail False = Sum 0
 
