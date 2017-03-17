@@ -21,23 +21,17 @@ import Test.Tasty.Runners
   , Time
   , Traversal(..)
   , TreeFold(..)
-  , consoleTestReporter
-  , resultSuccessful
-  , resultDescription
-  , testsNames
   )
-
+import qualified Test.Tasty.Runners as Runners
 import Text.JSON hiding (Result)
 
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TVar
 import Control.Monad ((>=>), liftM)
 import qualified Control.Monad.State as State
-import Data.Char (isDigit)
 import Data.Functor.Const
 import Data.Functor.Compose
 import Data.Monoid
-import Data.List.Split (splitOn)
 import Data.IntMap (IntMap)
 import Data.Proxy (Proxy(..))
 import Data.Tagged (Tagged(..))
@@ -67,11 +61,32 @@ import qualified Data.IntMap as IntMap
 --     ]
 -- }
 
-data VisibilityOpts
-  = Hidden | AfterDue | AfterPub | Visible
+-- * Options
 
-newtype Visibility = Visibility VisibilityOpts deriving Typeable
+gradeOptions :: [OptionDescription]
+gradeOptions =  [ Option (Proxy :: Proxy (Maybe GSScoreFile))
+                , Option (Proxy :: Proxy Weight)
+                , Option (Proxy :: Proxy Visibility)
+                , Option (Proxy :: Proxy NegScoring)
+                , Option (Proxy :: Proxy TotalPoints)
+                ]
 
+newtype TotalPoints = TotalPoints (Sum Int) deriving Typeable
+instance IsOption TotalPoints where
+  defaultValue = TotalPoints mempty
+  parseValue   = Just . TotalPoints . pure . read
+  optionName   = Tagged "TotalPoints"
+  optionHelp   = Tagged "Total Points: if neg scoring this is max possible for the suite; else running total"
+
+newtype NegScoring = NegScoring Bool deriving Typeable
+instance IsOption NegScoring where
+  defaultValue = NegScoring False
+  parseValue   = Just . NegScoring . read
+  optionName   = Tagged "NegScoring"
+  optionHelp   = Tagged "Negative Scoring (deduct points from max)"
+
+data VisibilityOpts = Hidden | AfterDue | AfterPub | Visible
+newtype Visibility  = Visibility VisibilityOpts deriving Typeable
 instance IsOption Visibility where
   defaultValue = Visibility Visible
   parseValue   = undefined
@@ -79,49 +94,53 @@ instance IsOption Visibility where
   optionHelp   = Tagged "Is this test visible?"
 
 newtype Weight = Weight Int deriving Typeable
-
 instance IsOption Weight where
   defaultValue = Weight 1
-  parseValue   = read
+  parseValue   = Just . Weight . read
   optionName   = Tagged "Weight"
   optionHelp   = Tagged "How many points a test is worth"
 
 newtype GSScoreFile = GSScoreFile FilePath deriving Typeable
-
 instance IsOption (Maybe GSScoreFile) where
-  defaultValue = Just (GSScoreFile "output.json")
+  defaultValue = Just (GSScoreFile "results.json")
   parseValue   = Just . Just . GSScoreFile
   optionName   = Tagged "scores"
   optionHelp   = Tagged "A file path to output scores, as a JSON file in GradeScope format"
 
-gradeOptions :: [OptionDescription]
-gradeOptions = [ Option (Proxy :: Proxy (Maybe GSScoreFile))
-               , Option (Proxy :: Proxy Weight)
-               ]
+-- ** Toggles
+
+scored :: Int -> TestTree -> TestTree
+scored n = localOption (Weight n)
+
+visibility :: VisibilityOpts -> TestTree -> TestTree
+visibility v = localOption (Visibility v)
+
+-- * Reporter
 
 gsConsoleReporter :: Ingredient
-gsConsoleReporter = consoleTestReporter `composeReporters` gradescopeReporter
+gsConsoleReporter = Runners.consoleTestReporter `composeReporters` gradescopeReporter
 
 gradescopeReporter :: Ingredient
 gradescopeReporter = TestReporter gradeOptions runner
   where
     runner opts tests = do
       GSScoreFile output <- lookupOption opts
-      scoreTests output opts tests
+      pure $ scoreTests output opts tests
 
 scoreTests :: FilePath -> OptionSet -> TestTree -> (StatusMap -> IO (Time -> IO Bool))
 scoreTests outfile opts tests = \testStatus -> do
+  let TotalPoints totalPoints = lookupOption opts
   Const summary <- flip State.evalStateT 0 $ getCompose $ getTraversal $
-    foldTestTree foldScores opts tests
+    Runners.foldTestTree (foldScores testStatus) opts tests
   return $ \time -> do
-    writeFile outfile $ (encode (toJSObject [ ("execution_time", showJSON (ceiling time :: Int))
-                                            , ("tests", showJSON summary)]))
+    writeFile outfile $
+      (encode (toJSObject [ ("execution_time" , showJSON (ceiling time :: Int))
+                          , ("score"          , showJSON (getSum (runningTotal summary <> totalPoints)))
+                          , ("tests"          , showJSON summary)
+                          ]))
     return . (0 ==) . getSum . numFailures $ summary
 
-data TestInfo = TestInfo
-  { testWorth :: Int
-  , testName  :: TestName
-  } deriving Show
+-- * Internals
 
 data TestResult = TestResult
   { resultId       :: Int
@@ -133,18 +152,21 @@ data TestResult = TestResult
 
 instance JSON TestResult where
   readJSON = undefined
-  showJSON TestResult{..} =
+  showJSON tr@TestResult{..} =
     JSObject $ toJSObject
-      [ ("name", showJSON resultName)
-      , ("score", showJSON score)
-      , ("max_score", showJSON resultWeight)
-      , ("number", showJSON resultId)
-      , ("output", showJSON (resultDescription resultMetadata))
-      , ("visibility", showJSON resultVisible)
+      [ ("name"       , showJSON resultName)
+      , ("score"      , showJSON score)
+      , ("max_score"  , showJSON resultWeight)
+      , ("number"     , showJSON resultId)
+      , ("output"     , showJSON (Runners.resultDescription resultMetadata))
+      , ("visibility" , showJSON resultVisible)
       ]
     where
-      score | resultSuccessful resultMetadata = resultWeight
+      score | resultSuccessful tr = resultWeight
             | otherwise = 0
+
+resultSuccessful :: TestResult -> Bool
+resultSuccessful = Runners.resultSuccessful . resultMetadata
 
 instance JSON VisibilityOpts where
   readJSON = undefined
@@ -155,21 +177,27 @@ instance JSON VisibilityOpts where
 
 data ScoreSummary = ScoreSummary
   { individualTests :: [TestResult]
-  , numFailures :: Sum Int
+  , runningTotal    :: Sum Int
+  , numFailures     :: Sum Int
   } deriving Generic
 
 instance JSON ScoreSummary where
   readJSON = undefined
-  showJSON ss = toJSObject $
+  showJSON ss = JSObject . toJSObject $
     [ ("tests", showJSON ss) ]
 
 instance Monoid ScoreSummary where
-  mempty = ScoreSummary mempty mempty
-  ss1 `mappend` ss2 =
-    ScoreSummary (individualTests ss1 <> individualTests ss2)
-                 (numFailures ss1 <> numFailures ss2)
+  mempty = ScoreSummary mempty mempty mempty
+  (ScoreSummary ts1 tot1 f1) `mappend` (ScoreSummary ts2 tot2 f2) =
+    ScoreSummary (ts1<>ts2) (tot1<>tot2) (f1<>f2)
 
 type ScoreTraversal = Traversal (Compose (State.StateT Int IO) (Const ScoreSummary))
+
+foldScores :: StatusMap -> TreeFold ScoreTraversal
+foldScores statusMap = Runners.trivialFold
+                       { foldSingle = scoreSingleTest statusMap
+                       , foldGroup = scoreGroup
+                       }
 
 scoreSingleTest :: IsTest t
                 => StatusMap -> OptionSet -> TestName -> t -> ScoreTraversal
@@ -177,10 +205,23 @@ scoreSingleTest statusMap options resultName _ = Traversal $ Compose $ do
   resultId <- State.get
   let Weight resultWeight = lookupOption options
       Visibility resultVisible = lookupOption options
-  summary <- liftM $ do
-    resultMetadata <- atomically . waitFinished $ resultId IntMap.! statusMap
+      NegScoring ns = lookupOption options
+  testResult <- State.lift $ do
+    resultMetadata <- atomically . waitFinished $ statusMap IntMap.! resultId
     return TestResult{..}
+  let
+    failed = resultSuccessful testResult
+    summary = ScoreSummary [testResult] (scoreQ resultWeight failed ns) (countFail failed)
   Const summary <$ State.modify (+1)
+  where
+    scoreQ w f ns
+      -- negative scoring, fail
+      | ns == True && f == True   = Sum (-w)
+      -- positive scoring, pass
+      | ns == False && f == False = Sum w
+      | otherwise                 = Sum 0
+    countFail True = Sum 1
+    countFail False = Sum 0
 
 waitFinished :: TVar Status -> STM Result
 waitFinished = readTVar >=> \st ->
@@ -190,14 +231,3 @@ waitFinished = readTVar >=> \st ->
 
 scoreGroup :: TestName -> ScoreTraversal -> ScoreTraversal
 scoreGroup group kids = kids
-
-foldScores :: TreeFold ScoreTraversal
-foldScores = trivialFold { foldSingle = scoreSingleTest statusMap
-                         , foldGroup = scoreGroup
-                         }
-
-scored :: Int -> TestTree -> TestTree
-scored n = localOption (Weight n)
-
-visibility :: VisibilityOpts -> TestTree -> TestTree
-visibility v = localOption (Visibility v)
