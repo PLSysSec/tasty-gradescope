@@ -184,7 +184,7 @@ data ScoreSummary = ScoreSummary
 
 instance JSON ScoreSummary where
   readJSON = undefined
-  showJSON ss = JSArray $ showJSON (individualTests ss)
+  showJSON ss = showJSON (individualTests ss)
 
 instance Monoid ScoreSummary where
   mempty = ScoreSummary mempty mempty mempty
