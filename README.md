@@ -9,7 +9,7 @@ Unfortunately, *top level* option parameters do not work when specified inside
 the test suite yet, so you must pass them in when you run the tester, e.g.
 
 ```
-stack test --test-arguments "--scores results_hs.json --NegScoring True --TotalPoints 55"                                                   master ✭ ◼
+stack test --test-arguments "--scores results_hs.json --NegScoring True --TotalPoints 55"
 ```
 
 the top level options are:
@@ -24,6 +24,6 @@ the top level options are:
 You can locally alter the points for each test in the tester (default:
 1), using the `scored` combinator:
 
-```
+```haskell
 scored 2 $ testProperty "padZero"    prop_padZero
 ```
